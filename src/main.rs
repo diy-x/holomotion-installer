@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use anyhow::{Context, Result, anyhow};
 
-const VERSION: &str = "2.2.0";
+const VERSION: &str = "2.3.0";
 const PUBLISH_DATE: &str = "2024-09-01";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +45,8 @@ enum Action {
     Uninstall,
     Launch,
     CreateDesktop,
-    RemoveDesktop,DebugTags,
+    RemoveDesktop,
+    DebugTags,
     Status,
     ForceRefresh,
 }
@@ -56,6 +57,7 @@ struct Config {
     channel: Option<Channel>,
     kill_pid: Option<u32>,
     launch_after: bool,
+    app_name: String,    // 新增：应用名称
 }
 
 impl Config {
@@ -68,12 +70,18 @@ impl Config {
             .transpose()?;
         let kill_pid = matches.get_one::<u32>("kill").copied();
         let launch_after = matches.get_flag("launch");
+        // 获取应用名称，默认为 HoloMotion
+        let app_name = matches
+            .get_one::<String>("app-name")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "HoloMotion".to_string());
 
         Ok(Config {
             action,
             channel,
             kill_pid,
             launch_after,
+            app_name,
         })
     }
 
@@ -118,8 +126,7 @@ struct AppConfig {
 struct Version {
     major: u32,
     minor: u32,
-    patch: u32,
-    pre_release: Option<String>,
+    patch: u32,pre_release: Option<String>,
     build_metadata: Option<String>,
     raw: String,
 }
@@ -127,8 +134,7 @@ struct Version {
 impl Version {
     fn parse(version_str: &str) -> Result<Self> {
         let raw = version_str.to_string();
-
-        //处理日期格式版本 (如 4.2.2-20240901)
+        // 处理日期格式版本 (如 4.2.2-20240901)
         let date_regex = Regex::new(r"^(\d+)\.(\d+)\.(\d+)-(\d{8})$")?;
         if let Some(captures) = date_regex.captures(version_str) {
             return Ok(Version {
@@ -175,15 +181,18 @@ impl Ord for Version {
             Ordering::Equal => {},
             other => return other,
         }
+
         match self.minor.cmp(&other.minor) {
-            Ordering::Equal => {},
-            other => return other,
-        }match self.patch.cmp(&other.patch) {
             Ordering::Equal => {},
             other => return other,
         }
 
-        match(&self.pre_release, &other.pre_release) {
+        match self.patch.cmp(&other.patch) {
+            Ordering::Equal => {},
+            other => return other,
+        }
+
+        match (&self.pre_release, &other.pre_release) {
             (None, None) => Ordering::Equal,
             (None, Some(_)) => Ordering::Greater,
             (Some(_), None) => Ordering::Less,
@@ -205,8 +214,8 @@ impl PartialOrd for Version {
 }
 
 struct HoloMotionInstaller {
-    install_dir: PathBuf,
-    ntsport_dir: PathBuf,
+    app_name: String,
+    install_dir: PathBuf,ntsport_dir: PathBuf,
     program_dir: PathBuf,
     caching_dir: PathBuf,
     startup_bin: PathBuf,
@@ -216,21 +225,22 @@ struct HoloMotionInstaller {
 }
 
 impl HoloMotionInstaller {
-    fn new() -> Result<Self> {
+    fn new(app_name: &str) -> Result<Self> {
         let home_dir = dirs::home_dir()
             .ok_or_else(|| anyhow!("Could not determine home directory"))?;
 
         let install_dir = home_dir.join("local/bin");
         let ntsport_dir = install_dir.join("ntsports");
-        let program_dir = ntsport_dir.join("HoloMotion");
+        let program_dir = ntsport_dir.join(app_name); // 使用动态应用名称
         let caching_dir = home_dir.join("Documents/HoloMotion_log");
 
-        let startup_bin = install_dir.join("HoloMotion");
-        let install_bin = install_dir.join("HoloMotion");
+        let startup_bin = install_dir.join(app_name); // 使用动态应用名称
+        let install_bin = install_dir.join(app_name);// 使用动态应用名称
         let branch_file = program_dir.join("branch.txt");
         let git_file = program_dir.join("git.txt");
 
         Ok(Self {
+            app_name: app_name.to_string(),
             install_dir,
             ntsport_dir,
             program_dir,
@@ -262,6 +272,35 @@ impl HoloMotionInstaller {
         let log_dir = self.caching_dir.join("log/update");
         fs::create_dir_all(&log_dir)?;
         Ok(log_dir)
+    }
+
+    /// 修正程序执行权限（对应bash脚本中的_chmod函数）
+    fn fix_permissions(&self) -> Result<()> {
+        self.log("正在修正程序执行权限...");
+
+        let files_to_chmod = vec![
+            self.program_dir.join("HoloMotion_Update_installer_new.sh"),
+            self.program_dir.join("NT.Client.sh"),
+            self.program_dir.join("NT.Client"),
+            self.program_dir.join("NT.Config.sh"),
+            self.program_dir.join("NT.Config"),
+        ];
+
+        for file_path in files_to_chmod {
+            if file_path.exists() {
+                let output = StdCommand::new("chmod")
+                    .args(&["777", file_path.to_string_lossy().as_ref()])
+                    .output();
+                if let Ok(result) = output {
+                    if result.status.success() {
+                        self.log(&format!("chmod 777 {}", file_path.display()));
+                    }
+                }
+            }
+        }
+
+        self.log("权限修正完成");
+        Ok(())
     }
 
     fn get_git_url(&self) -> Result<String> {
@@ -320,7 +359,7 @@ impl HoloMotionInstaller {
         };
 
         if normalize_url(&expected_url) != normalize_url(&current_url) {
-            self.log(&"检测到远程仓库URL不匹配".to_string());
+            self.log(&format!("检测到远程仓库URL不匹配"));
             self.log(&format!("当前: {}", current_url));
             self.log(&format!("期望: {}", expected_url));
             self.log("正在更新远程仓库URL...");
@@ -366,6 +405,7 @@ impl HoloMotionInstaller {
                 .args(&["fetch", "--all", "--tags", "--force"])
                 .current_dir(&self.program_dir)
                 .output()?;
+
             if !output2.status.success() {
                 let stderr2 = String::from_utf8_lossy(&output2.stderr);
                 return Err(anyhow!("Failed to fetch from remote: {}", stderr2));
@@ -380,6 +420,7 @@ impl HoloMotionInstaller {
             let tags = String::from_utf8(output.stdout)?;
             let tag_count = tags.lines().count();
             self.log(&format!("远程仓库信息获取完成，共 {} 个标签", tag_count));
+
             let latest_tags: Vec<&str> = tags.lines().take(5).collect();
             self.log(&format!("最新标签: {:?}", latest_tags));
         }
@@ -389,6 +430,7 @@ impl HoloMotionInstaller {
 
     fn force_refresh_tags(&self) -> Result<()> {
         self.log("强制刷新远程标签信息...");
+
         if !self.repos_exist() {
             return Err(anyhow!("Repository does not exist"));
         }
@@ -463,7 +505,7 @@ impl HoloMotionInstaller {
         }
 
         let raw_version = String::from_utf8(output.stdout)?.trim().to_string();
-        self.log(&format!("Git describe 原始输出: {}", raw_version));
+        self.log(&format!("Git describe原始输出: {}", raw_version));
 
         let version = self.extract_version_from_git_describe(&raw_version)?;
         self.log(&format!("提取的版本号: {}", version));
@@ -654,7 +696,7 @@ impl HoloMotionInstaller {
 
     fn install(&self, channel: &Channel) -> Result<()> {
         self.log("开始安装");
-        self.log(&format!("安装目录: {:?}, 通道: {}", self.ntsport_dir, channel.as_str()));
+        self.log(&format!("安装目录: {:?}, 通道: {}, 应用: {}", self.ntsport_dir, channel.as_str(), self.app_name));
 
         self.clean_installed()?;
 
@@ -692,17 +734,70 @@ impl HoloMotionInstaller {
                 .args(&["reset", "--hard", &latest_version])
                 .current_dir(&self.program_dir)
                 .output()?;
-
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(anyhow!("切换到最新版本失败: {}", stderr));
             }
         }
 
+        // 创建符号链接
+        self.create_symlinks()?;
+
+        // 修正权限
+        self.fix_permissions()?;
+
         fs::write(&self.branch_file, channel.as_str())?;
         self.log(&format!("写入配置文件: channel={}", channel.as_str()));
 
         self.log(&format!("安装完成! 版本: {}", latest_version));
+        Ok(())
+    }
+
+    /// 创建符号链接（对应bash脚本中的ln -s命令）
+    fn create_symlinks(&self) -> Result<()> {
+        self.log("正在创建符号链接...");
+        // 创建安装脚本的符号链接
+        let install_src = self.program_dir.join("HoloMotion_Update_installer_new.sh");
+        let install_app = self.ntsport_dir.join("HoloMotion_Update_installer_new.sh");
+
+        if install_src.exists() {
+            if install_app.exists() {
+                let _ = fs::remove_file(&install_app);
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
+                if let Err(e) = symlink(&install_src, &install_app) {
+                    self.log(&format!("创建安装脚本链接失败: {}", e));
+                }
+            }
+            // 设置执行权限
+            let _ = StdCommand::new("chmod")
+                .args(&["+x", install_app.to_string_lossy().as_ref()])
+                .output();
+        }// 创建启动脚本的符号链接
+        let startup_src = self.program_dir.join("NT.Client.sh");
+
+        if startup_src.exists() {
+            if self.startup_bin.exists() {
+                let _ = fs::remove_file(&self.startup_bin);
+            }
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
+                if let Err(e) = symlink(&startup_src, &self.startup_bin) {
+                    self.log(&format!("创建启动脚本链接失败: {}", e));
+                }
+            }
+
+            // 设置执行权限
+            let _ = StdCommand::new("chmod")
+                .args(&["+x", startup_src.to_string_lossy().as_ref()])
+                .output();
+        }
+
+        self.log("符号链接创建完成");
         Ok(())
     }
 
@@ -734,23 +829,34 @@ impl HoloMotionInstaller {
             return Err(anyhow!("Failed to reset git state"));
         }
 
+        // 修正权限（在pull之前）
+        self.fix_permissions()?;
+
+        let output = StdCommand::new("git")
+            .args(&["pull"])
+            .current_dir(&self.program_dir)
+            .output()?;
+        if !output.status.success() {
+            self.fix_permissions()?; // 失败时再次尝试修正权限
+            return Err(anyhow!("fatal: 下载最新仓库失败！"));
+        }
+
         self.log(&format!("正在切换到版本: {}", latest_version));
         let output = StdCommand::new("git")
-            .args(&["checkout", &latest_version])
+            .args(&["reset", "--hard", &latest_version])
             .current_dir(&self.program_dir)
             .output()?;
 
         if !output.status.success() {
-            let output = StdCommand::new("git")
-                .args(&["reset", "--hard", &latest_version])
-                .current_dir(&self.program_dir)
-                .output()?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(anyhow!("Failed to switch to latest version: {}", stderr));
-            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("Failed to switch to latest version: {}", stderr));
         }
+
+        // 重新创建符号链接
+        self.create_symlinks()?;
+
+        // 修正权限
+        self.fix_permissions()?;
 
         fs::write(&self.branch_file, channel.as_str())?;
 
@@ -783,44 +889,87 @@ impl HoloMotionInstaller {
     }
 
     fn create_desktop_entry(&self) -> Result<()> {
+        let startup_app = self.program_dir.join("NT.Client.sh");
+        let startup_png = self.program_dir.join("assets/watermark_logo.png");
         let desktop_content = format!(
             "[Desktop Entry]\n\
 Type=Application\n\
-Name=HoloMotion\n\
-GenericName=HoloMotion\n\
-Comment=HoloMotion Application\n\
+Name={}\n\
+GenericName={}\n\
+Comment={} Application\n\
 Exec={}\n\
 Icon={}\n\
 Terminal=false\n\
 Categories=Application;Development;\n\
 StartupNotify=true\n",
-            self.startup_bin.display(),
-            self.program_dir.join("assets/watermark_logo.png").display()
+            self.app_name,
+            self.app_name,
+            self.app_name,
+            startup_app.display(),
+            startup_png.display()
         );
 
-        let desktop_file = Path::new("/usr/share/applications/HoloMotion.desktop");
-        fs::write(desktop_file, desktop_content)?;
+        let desktop_file = Path::new("/usr/share/applications").join(format!("{}.desktop", self.app_name));
+        let autostart_file = dirs::home_dir()
+            .unwrap()
+            .join(".config/autostart")
+            .join(format!("{}.desktop", self.app_name));
 
+        // 创建系统桌面文件
+        fs::write(&desktop_file, &desktop_content)?;
+
+        // 创建自动启动文件
+        if let Some(autostart_dir) = autostart_file.parent() {
+            fs::create_dir_all(autostart_dir)?;
+        }
+        fs::write(&autostart_file, &desktop_content)?;
+
+        // 创建桌面快捷方式
+        if let Some(desktop_dir) = dirs::desktop_dir() {
+            let desktop_shortcut = desktop_dir.join(format!("{}.desktop", self.app_name));
+            fs::write(&desktop_shortcut, &desktop_content)?;
+            // 设置桌面文件权限
+            let _ = StdCommand::new("chmod")
+                .args(&["+x", desktop_shortcut.to_string_lossy().as_ref()])
+                .output();
+        }
+
+        // 设置权限
         let _ = StdCommand::new("chmod")
-            .args(&["644", desktop_file.to_str().unwrap()])
+            .args(&["644", desktop_file.to_string_lossy().as_ref()])
             .output();
+
         self.log("桌面图标创建成功");
         Ok(())
     }
 
     fn remove_desktop_entry(&self) -> Result<()> {
-        let desktop_file = Path::new("/usr/share/applications/HoloMotion.desktop");
-        if desktop_file.exists() {
-            fs::remove_file(desktop_file)?;
-            self.log("桌面图标删除成功");
-        } else {
-            self.log("桌面图标不存在");
+        let desktop_files = vec![
+            Path::new("/usr/share/applications").join(format!("{}.desktop", self.app_name)),
+            dirs::home_dir()
+                .unwrap()
+                .join(".config/autostart")
+                .join(format!("{}.desktop", self.app_name)),
+        ];
+
+        if let Some(desktop_dir) = dirs::desktop_dir() {
+            desktop_files.into_iter()
+                .chain(std::iter::once(desktop_dir.join(format!("{}.desktop", self.app_name))))
+                .for_each(|file| {
+                    if file.exists() {
+                        let _ = fs::remove_file(&file);
+                    }
+                });
         }
+
+        self.log("桌面图标删除成功");
         Ok(())
     }
 
     fn debug_list_tags(&self) -> Result<()> {
         self.log("=== 调试信息: 当前仓库标签 ===");
+        self.log(&format!("应用名称: {}", self.app_name));
+        self.log(&format!("程序目录: {:?}", self.program_dir));
 
         if !self.repos_exist() {
             self.log("仓库不存在");
@@ -831,12 +980,14 @@ StartupNotify=true\n",
             .args(&["tag", "-l", "--sort=-version:refname"])
             .current_dir(&self.program_dir)
             .output()?;
+
         if output.status.success() {
             let tags = String::from_utf8(output.stdout)?;
             self.log("本地标签(按版本排序):");
             for tag in tags.lines().take(20) {
                 self.log(&format!("  {}", tag));
-            }}let output = StdCommand::new("git")
+            }
+        }let output = StdCommand::new("git")
             .args(&["ls-remote", "--tags", "origin"])
             .current_dir(&self.program_dir)
             .output()?;
@@ -855,12 +1006,15 @@ StartupNotify=true\n",
 
     fn check_status(&self) -> Result<()> {
         self.log("=== 系统状态检查 ===");
+        self.log(&format!("应用名称: {}", self.app_name));
+        self.log(&format!("程序目录: {:?}", self.program_dir));
+        self.log(&format!("启动文件: {:?}", self.startup_bin));
 
         if self.repos_exist() {
             self.log("✓ 应用程序已安装");
+
             if let Ok(channel) = self.get_current_channel() {
                 self.log(&format!("✓ 当前通道: {}", channel.as_str()));
-
                 if let Ok(current_version) = self.get_current_version(&channel) {
                     self.log(&format!("✓ 当前版本: {}", current_version));
                     let _ = self.ensure_correct_remote();
@@ -956,7 +1110,7 @@ fn build_cli() -> Command {
     Command::new("HoloMotion Installer")
         .version(VERSION)
         .author("HoloMotion Team")
-        .about("HoloMotion application installer and updater with advanced CLI")
+        .about("HoloMotion application installer and updater with multi-directory support")
         .help_template("\
 {before-help}{name} {version}
 {author-with-newline}{about-with-newline}
@@ -965,12 +1119,14 @@ fn build_cli() -> Command {
 {all-args}
 
 {after-help}")
-        .after_help("Examples:holomotion-installer --install -b release -rInstall with release channel and launch after completion
-  holomotion-installer --upgrade -k1234
-      Upgrade after killing process1234
-  holomotion-installer --get-latest-version
-      Check latest available version")
-        //短参数组
+        .after_help("Examples:
+  holomotion-installer --install -b release -rInstall with release channel and launch after completion
+  holomotion-installer --install -b release -n HoloMotion_Test
+      Install HoloMotion_Test variant
+  holomotion-installer --upgrade -k 1234 -n HoloMotion_Test
+      Upgrade HoloMotion_Test after killing process 1234")
+
+        // 短参数组
         .arg(Arg::new("channel")
             .short('b')
             .value_name("CHANNEL")
@@ -987,6 +1143,12 @@ fn build_cli() -> Command {
             .short('r')
             .help("在安装或升级完成后是否启动客户端")
             .action(ArgAction::SetTrue))
+        .arg(Arg::new("app-name")
+            .short('n')
+            .long("name")
+            .value_name("APP_NAME")
+            .help("指定应用名称 (默认: HoloMotion, 可选: HoloMotion_Test)")
+            .num_args(1))
 
         // 长参数组 - 与bash脚本完全一致
         .arg(Arg::new("get-current-channel")
@@ -1047,7 +1209,6 @@ fn build_cli() -> Command {
             .short('h')
             .help("帮助信息")
             .action(ArgAction::SetTrue))
-
         // 调试命令
         .arg(Arg::new("debug-tags")
             .long("debug-tags")
@@ -1090,7 +1251,7 @@ fn main() -> Result<()> {
     }
 
     let config = Config::from_matches(&matches)?;
-    let installer = HoloMotionInstaller::new()?;
+    let installer = HoloMotionInstaller::new(&config.app_name)?;
     installer.execute_action(&config)?;
 
     Ok(())
