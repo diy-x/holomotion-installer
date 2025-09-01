@@ -1,0 +1,78 @@
+name: Build Multi-Architecture
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build for ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: linux-arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: macos-arm64
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build
+        run: |
+          if [[ "${{ matrix.target }}" == *"linux"* && "${{ runner.os }}" == "Linux" ]]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Package
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../holomotion-${{ matrix.name }}.tar.gz holomotion
+          cd -
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: holomotion-${{ matrix.name }}
+          path: holomotion-${{ matrix.name }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            holomotion-linux-x86_64/holomotion-linux-x86_64.tar.gz
+            holomotion-linux-arm64/holomotion-linux-arm64.tar.gz
+            holomotion-macos-x86_64/holomotion-macos-x86_64.tar.gz
+            holomotion-macos-arm64/holomotion-macos-arm64.tar.gz
