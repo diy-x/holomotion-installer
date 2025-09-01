@@ -215,7 +215,8 @@ impl PartialOrd for Version {
 
 struct HoloMotionInstaller {
     app_name: String,
-    install_dir: PathBuf,ntsport_dir: PathBuf,
+    install_dir: PathBuf,
+    ntsport_dir: PathBuf,
     program_dir: PathBuf,
     caching_dir: PathBuf,
     startup_bin: PathBuf,
@@ -359,7 +360,7 @@ impl HoloMotionInstaller {
         };
 
         if normalize_url(&expected_url) != normalize_url(&current_url) {
-            self.log(&format!("检测到远程仓库URL不匹配"));
+            self.log("检测到远程仓库URL不匹配");
             self.log(&format!("当前: {}", current_url));
             self.log(&format!("期望: {}", expected_url));
             self.log("正在更新远程仓库URL...");
