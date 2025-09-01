@@ -11,14 +11,16 @@ name = "holomotion-installer"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+chrono = { version = "0", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env", "color"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-chrono = { version = "0", features = ["serde"] }
+serde_json = "1.0"
 dirs = "5"
-tokio = { version = "1", features = ["full"], optional = true }
+anyhow = "1"
+thiserror = "1"
 
-[features]
-default = []
-async = ["tokio"]
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
