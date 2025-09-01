@@ -45,14 +45,14 @@ jobs:
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../holomotion-${{ matrix.name }}.tar.gz holomotion
+          tar czf ../../../holomotion-installer-${{ matrix.name }}.tar.gz holomotion-installer
           cd -
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: holomotion-${{ matrix.name }}
-          path: holomotion-${{ matrix.name }}.tar.gz
+          name: holomotion-installer-${{ matrix.name }}
+          path: holomotion-installer-${{ matrix.name }}.tar.gz
 
   release:
     needs: build
@@ -66,5 +66,5 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            holomotion-linux-x86_64/holomotion-linux-x86_64.tar.gz
-            holomotion-linux-arm64/holomotion-linux-arm64.tar.gz
+            holomotion-installer-linux-x86_64/holomotion-installer-linux-x86_64.tar.gz
+            holomotion-installer-linux-arm64/holomotion-installer-linux-arm64.tar.gz
